@@ -1,0 +1,443 @@
+---
+title: "A 3-way crosstab table using {gt}"
+author: "John Johnson"
+date: "9/21/2020"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+# Ignore this chunk. It silently builds the table in order to display
+# it at the top of the document.
+
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(gt)
+
+income.sex.age <- read_csv("data/income_by_sex_and_age.csv")
+total.jobs.by.sex <- read_csv("data/total_jobs_by_sex.csv")
+
+top.jobs <- total.jobs.by.sex %>%
+  group_by(OCC2010, n) %>% 
+  summarise() %>%
+  arrange(desc(n)) %>%
+  pull(OCC2010)
+
+wage.tibble <- inner_join(
+  # pivot wider
+  income.sex.age %>%
+    pivot_wider(names_from = c(age_category, SEX), values_from = median_wage),
+  # pivot wider
+  total.jobs.by.sex %>%
+    pivot_wider(names_from = c(age_category, SEX), values_from = pct)
+) %>%
+  # arrange columns in the appropriate order
+  select(OCC2010, starts_with("Under"), starts_with("35"), 
+         starts_with("50"), `total jobs_Male` = total_Male, 
+         `total jobs_Female` = total_Female, n, obs = unweighted_n) %>%
+  # make OCC2010 a factor and order from most jobs to fewest
+  mutate(OCC2010 = factor(OCC2010, levels = top.jobs)) %>%
+  arrange(OCC2010)
+
+wage.gap.values <- income.sex.age %>%
+  pivot_wider(names_from = SEX, values_from = median_wage) %>%
+  mutate(wage_gap = Male - Female)
+
+wage.gap.table <- wage.gap.values %>%
+  pivot_longer(cols = c("Male", "Female")) %>%
+  select(OCC2010, age_category, name, wage_gap) %>%
+  pivot_wider(names_from = c(age_category, name), values_from = wage_gap) %>%
+  # arrange from most jobs to fewest
+  mutate(OCC2010 = factor(OCC2010, levels = top.jobs)) %>%
+  arrange(OCC2010)
+purple_pal <- leaflet::colorNumeric(palette = "Purples", 
+                                    domain = wage.gap.values$wage_gap)
+luminance <- function(col){
+  # RGB values of the color
+  rgb.values <- col2rgb(col)
+  
+  # calculate luminance
+  red.value <- rgb.values[1] * 0.299
+  green.value <- rgb.values[2] * 0.587
+  blue.value <- rgb.values[3] * 0.114
+  
+  # add the values together and divide by 255 (the max value)
+  (red.value + green.value + blue.value)/255
+}
+luminance("orange") # for example
+
+text_color <- function(color){
+  if(luminance(color) < 0.6){
+    "white"
+  } else {
+    "black"
+  }
+}
+
+format_wage_gap <- function(gtobj, column){
+  # generate color for each cell in the column
+  color_value <- purple_pal(wage.gap.table %>% pull(sym(column)))
+  
+  # for each row in the column, perform these formatting steps
+  for(i in seq_along(wage.tibble %>% pull(sym(column)))){
+    gtobj <- gtobj %>%
+      tab_style(style = list(
+        # fill the cell background
+        cell_fill(color = color_value[i]),
+        # color the text black or white depending on the luminence of the background color
+        cell_text(color = text_color(color_value[i]))
+      ),
+      locations = cells_body(columns = column, rows = i))
+  }
+  gtobj
+}
+
+job.gap.table <- total.jobs.by.sex %>%
+  pivot_wider(names_from = SEX, values_from = pct) %>%
+  mutate(job_gap = Male - Female) %>%
+  select(OCC2010, `total jobs_Male` = Male, `total jobs_Female` = Female, job_gap) %>%
+  mutate(`total jobs_Male` = job_gap, `total jobs_Female` = job_gap) %>%
+  select(-job_gap) %>%
+  mutate(OCC2010 = factor(OCC2010, levels = top.jobs)) %>%
+  arrange(OCC2010)
+
+# use the PRGn diverging palette
+purple_green_pal <- leaflet::colorNumeric(palette = "PRGn", domain = job.gap.table$`total jobs_Male`,
+                                          reverse = TRUE)
+
+format_job_gap <- function(gtobj, column){
+  # generate color for each cell in the column
+  color_value <- purple_green_pal(job.gap.table %>% pull(sym(column)))
+  
+  # for each row in the column, perform these formatting steps
+  for(i in seq_along(wage.tibble %>% pull(sym(column)))){
+    gtobj <- gtobj %>%
+      tab_style(style = list(
+        # fill the cell background
+        cell_fill(color = color_value[i]),
+        # color the text black or white depending on the luminence of the background color
+        cell_text(color = text_color(color_value[i]))
+      ),
+      locations = cells_body(columns = column, rows = i))
+  }
+  gtobj
+}
+
+final.table <- wage.tibble %>%
+  gt(rowname_col = "OCC2010") %>%
+  tab_spanner_delim(delim = "_") %>%
+  fmt_currency(columns = c(2:7), decimals = 0, suffixing = T) %>%
+  fmt_percent(columns = 8:9, decimals = 0, scale_values = F) %>%
+  fmt_number(columns = 10, decimals = 1, suffixing = T) %>%
+  fmt_number(columns = 11, decimals = 0) %>%
+  tab_header(title = "Median annual wage for early-, mid-, and late-career workers by gender",
+             subtitle = md("includes all full-time workers in the top 20 most common occupational categories from the 2014-18 [American Community Survey](https://www.census.gov/programs-surveys/acs)")) %>%
+  tab_stubhead("occupation category") %>%
+  tab_source_note(md("**Data source:** Steven Ruggles, Sarah Flood, Ronald Goeken, Josia Grover, Erin Meyer, Jose Pacas
+                     and Matthew Sobek. *IPUMS USA: Version 10.0* [dataset]. Minneapolis, MN: IPUMS 2020. [https://doi.org/10.18128/D010.V10.0](https://doi.org/10.18128/D010.V10.0).
+                     Dollars are all in 2018 values. Full-time employment is defined as at least 37 hours per typical week.")) %>%
+  tab_footnote(footnote = md("IPUMS USA variable [*OCC2010*](https://usa.ipums.org/usa-action/variables/OCC2010#description_section), which is ''a harmonized occupation coding scheme based on the Census Bureau's 2010 ACS occupation classification scheme.''"),
+               locations = cells_stubhead()) %>%
+  tab_footnote(footnote = "The weighted estimate of total full-time workers in the United States",
+               locations = cells_column_labels("n")) %>%
+  tab_footnote(footnote = "The unweighted sample count",
+               locations = cells_column_labels("obs")) %>%
+  tab_options(heading.title.font.size = 24,
+              heading.title.font.weight = "bolder",
+              column_labels.font.weight = "bold") %>%
+  format_wage_gap("Under 35_Male") %>%
+  format_wage_gap("Under 35_Female") %>%
+  format_wage_gap("35 to 50_Male") %>%
+  format_wage_gap("35 to 50_Female") %>%
+  format_wage_gap("50 plus_Male") %>%
+  format_wage_gap("50 plus_Female") %>%
+  format_job_gap("total jobs_Male") %>%
+  format_job_gap("total jobs_Female") %>%
+  tab_footnote(footnote = "Darker colors indicated a larger wage gap between men and women.",
+               locations = cells_column_spanners(c("Under 35", "35 to 50", "50 plus"))) %>%
+  tab_footnote(footnote = "Purple = more men than woman. Green = more women than men.",
+               locations = cells_column_spanners("total jobs"))
+```
+
+&nbsp;
+```{r table_demo, message=FALSE, echo=FALSE}
+final.table
+```
+&nbsp;
+
+Public opinion researchers (and others) often want to display the interaction of 3 variables in a 3-way crosstab table. The `gt` package (along with `tidyr::pivot_wider`) make this once-tedious task easy. Here is an example of how to build one of these tables using U.S. Census microdata downloaded from [IPUMS USA](https://usa.ipums.org/usa/index.shtml).
+
+
+## Preparing the data
+I've already summarized the individual-level microdata into two summary tables. [Click here](https://johndjohnson.info/post/processing-ipums-usa-data-for-my-income-by-gender-and-age-rstudio-table-contest-entry/) to see this process in detail.
+
+The first table contains the median wages for workers by sex and age.
+```{r}
+library(tidyverse)
+library(gt)
+
+income.sex.age <- read_csv("https://raw.githubusercontent.com/jdjohn215/2020-RStudio-Table-Contest/master/data/income_by_sex_and_age.csv")
+head(income.sex.age)
+```
+
+The second shows the total share of jobs by sex, as well as the total job count (weighted and unweighted).
+```{r}
+total.jobs.by.sex <- read_csv("https://raw.githubusercontent.com/jdjohn215/2020-RStudio-Table-Contest/master/data/total_jobs_by_sex.csv")
+head(total.jobs.by.sex)
+```
+
+The rows in the table are ordered from most jobs to fewest. This correctly-ordered vector of occupation names will be useful later on.
+
+```{r, message=FALSE}
+# this is a vector of the occupation names in order of largest to smallest
+top.jobs <- total.jobs.by.sex %>%
+  group_by(OCC2010, n) %>% 
+  summarise() %>%
+  arrange(desc(n)) %>%
+  pull(OCC2010)
+```
+
+The first step is widening and combining the tables into a `tibble` which will then be passed to `gt`.
+
+```{r, message=FALSE}
+wage.tibble <- inner_join(
+  # pivot wider
+  income.sex.age %>%
+    pivot_wider(names_from = c(age_category, SEX), values_from = median_wage),
+  # pivot wider
+  total.jobs.by.sex %>%
+    pivot_wider(names_from = c(age_category, SEX), values_from = pct)
+) %>%
+  # arrange columns in the appropriate order
+  select(OCC2010, starts_with("Under"), starts_with("35"), 
+         starts_with("50"), `total jobs_Male` = total_Male, 
+         `total jobs_Female` = total_Female, n, obs = unweighted_n) %>%
+  # make OCC2010 a factor and order from most jobs to fewest
+  mutate(OCC2010 = factor(OCC2010, levels = top.jobs)) %>%
+  arrange(OCC2010)
+
+wage.tibble
+```
+
+## Using {gt}
+
+Now that the `tibble` is organized, we can turn it into a `gt` object, specifying that the occupation name column should become the "stub."
+
+```{r, message=FALSE}
+wage.gt.step1 <- gt(wage.tibble, rowname_col = "OCC2010")
+wage.gt.step1 %>% 
+  # this is just for rmarkdown display purposes
+  tab_options(container.height = px(500))
+```
+&nbsp;
+
+Notice the the underscores (`_`) added to the column names when we used `pivot_wider` in step 1. These underscores indicate the column spanners. In this step, we'll also format the data presentation in each column.
+
+```{r, message=FALSE}
+wage.gt.step2 <- wage.gt.step1 %>%
+  # create column spanners as already indicated in the column names by "_"
+  tab_spanner_delim(delim = "_") %>%
+  # format currency colums
+  fmt_currency(columns = c(2:7), decimals = 0, suffixing = T) %>%
+  # format percentage columns
+  fmt_percent(columns = 8:9, decimals = 0, scale_values = F) %>%
+  # format the weighted count as a rounded, and suffixed number
+  fmt_number(columns = 10, decimals = 1, suffixing = T) %>%
+  # format the actual sample count without rounding
+  fmt_number(columns = 11, decimals = 0)
+wage.gt.step2 %>% tab_options(container.height = px(500))
+```
+&nbsp;
+
+Add explanatory text. The `gt` package makes it easy to add titles, subtitles, footnotes, and data notes. We don't need to specify footnote numbers, because `gt` assigns them automatically based on their first appearance in the table. The `md` function returns markdown formatted text.
+
+```{r, message=FALSE}
+wage.gt.step3 <- wage.gt.step2 %>%
+  # add explanatory text
+  tab_header(title = "Median annual wage for early-, mid-, and late-career workers by gender",
+             subtitle = md("includes all full-time workers in the top 20 most common occupational categories from the 2014-18 [American Community Survey](https://www.census.gov/programs-surveys/acs)")) %>%
+  tab_stubhead("occupation category") %>%
+  tab_source_note(md("**Data source:** Steven Ruggles, Sarah Flood, Ronald Goeken, Josia Grover, Erin Meyer, Jose Pacas
+                     and Matthew Sobek. *IPUMS USA: Version 10.0* [dataset]. Minneapolis, MN: IPUMS 2020. [https://doi.org/10.18128/D010.V10.0](https://doi.org/10.18128/D010.V10.0).
+                     Dollars are all in 2018 values. Full-time employment is defined as at least 37 hours per typical week.")) %>%
+  tab_footnote(footnote = md("IPUMS USA variable [*OCC2010*](https://usa.ipums.org/usa-action/variables/OCC2010#description_section), which is ''a harmonized occupation coding
+                  scheme based on the Census Bureau's 2010 ACS occupation classification scheme.''"),
+               locations = cells_stubhead()) %>%
+  tab_footnote(footnote = "The weighted estimate of total full-time workers in the United States",
+               locations = cells_column_labels("n")) %>%
+  tab_footnote(footnote = "The unweighted sample count",
+               locations = cells_column_labels("obs")) %>%
+  tab_options(heading.title.font.size = 24,
+              heading.title.font.weight = "bolder",
+              column_labels.font.weight = "bold")
+wage.gt.step3 %>% tab_options(container.height = px(500))
+```
+&nbsp;
+
+## Formatting colors
+
+Out of the box, `gt` provides the ability to target a column by name and rows by a logical condition for formatting. It doesn't currently have the built-in ability to simply format a cell by applying a function the value contained in that cell. In this table, I want to do some something more complicated yet.
+
+One interesting aspect of the table is the size of the gender wage gap in each age/occupation pair. This requires the viewer to do some mental math. To help the viewer compare wage gaps across the table, I want to shade each cell by the size of the wage gap between it and its partner cell.
+
+Doing this takes several steps. First, make a `tibble` with the same rows and columns that we want to format in our `gt` object. Except, the values in the cells of this `tibble` will be the wage gaps--the values we want to color the `gt` cells by--not the median wages. Then, write a function which uses a `for` loop to target each cell in the `gt` object individually, coloring its background based on the value in the wage gap `tibble`.
+
+### step 1: calculate wage gaps
+
+```{r, message=FALSE}
+# first, calculate the size of the wage gap for each gender/age pair
+wage.gap.values <- income.sex.age %>%
+  pivot_wider(names_from = SEX, values_from = median_wage) %>%
+  mutate(wage_gap = Male - Female)
+
+# create a table with same column names and row order as the gt object
+wage.gap.table <- wage.gap.values %>%
+  pivot_longer(cols = c("Male", "Female")) %>%
+  select(OCC2010, age_category, name, wage_gap) %>%
+  pivot_wider(names_from = c(age_category, name), values_from = wage_gap) %>%
+  # arrange from most jobs to fewest
+  mutate(OCC2010 = factor(OCC2010, levels = top.jobs)) %>%
+  arrange(OCC2010)
+```
+
+### step 2: write functions to define the cell colors
+
+First, I make a function which returns a color name in my chosen palette for each wage gap value. I create this function using the useful `colorNumeric` function from the `leaflet` package. Because *all* of the wage gaps have the same sign (men make more than women) a sequential color palette is appropriate. I'm using the "Purples" palette from [ColorBrewer](https://colorbrewer2.org/#type=sequential&scheme=Purples&n=3).
+
+```{r, message=FALSE}
+# borrow the colorNumeric function from {leaflet}
+# this new function, purple_pal, returns a color for each value
+purple_pal <- leaflet::colorNumeric(palette = "Purples", 
+                                    domain = wage.gap.values$wage_gap)
+purple_pal(wage.gap.values$wage_gap[10]) # for example
+```
+
+Some of the background colors are quite dark, so in these cases I need to switch the font color from black to white. To do this, I create two helper functions--`luminance` calculates the brightness of each color and `text_color` chooses between "black" or "white" based on that value. My `luminance` function is based on the helpful discussion beneath [this StackOverflow question](https://stackoverflow.com/questions/596216/formula-to-determine-brightness-of-rgb-color).
+
+```{r, message=FALSE}
+luminance <- function(col){
+  # RGB values of the color
+  rgb.values <- col2rgb(col)
+  
+  # calculate luminance
+  red.value <- rgb.values[1] * 0.299
+  green.value <- rgb.values[2] * 0.587
+  blue.value <- rgb.values[3] * 0.114
+  
+  # add the values together and divide by 255 (the max value)
+  (red.value + green.value + blue.value)/255
+}
+luminance("orange") # for example
+
+# this function returns a text color based on luminance of background color
+text_color <- function(color){
+  if(luminance(color) < 0.6){
+    "white"
+  } else {
+    "black"
+  }
+}
+text_color("orange") # for example
+```
+
+Finally, I combine all these helper functions into one function we can be applied to each relevant column in the `gt` object. Thanks to Arun Kirshna for a [helpful suggestion](https://stackoverflow.com/questions/63944953/how-to-conditionally-format-a-cell-in-a-gt-table-based-on-the-value-of-the-cel/63945239#63945239) on this step.
+
+```{r, message=FALSE}
+# create a function which formats each cell individually
+format_wage_gap <- function(gtobj, column){
+  # generate color for each cell in the column
+  color_value <- purple_pal(wage.gap.table %>% pull(sym(column)))
+  
+  # for each row in the column, perform these formatting steps
+  for(i in seq_along(wage.tibble %>% pull(sym(column)))){
+    gtobj <- gtobj %>%
+      tab_style(style = list(
+        # fill the cell background
+        cell_fill(color = color_value[i]),
+        # color the text black or white depending on the luminence of the background color
+        cell_text(color = text_color(color_value[i]))
+      ),
+      locations = cells_body(columns = column, rows = i))
+  }
+  gtobj
+}
+```
+
+```{r, message=FALSE}
+wage.gt.step4 <- wage.gt.step3 %>%
+  format_wage_gap("Under 35_Male") %>%
+  format_wage_gap("Under 35_Female") %>%
+  format_wage_gap("35 to 50_Male") %>%
+  format_wage_gap("35 to 50_Female") %>%
+  format_wage_gap("50 plus_Male") %>%
+  format_wage_gap("50 plus_Female")
+wage.gt.step4 %>% tab_options(container.height = px(500))
+```
+
+### step 3: repeat for job gaps
+
+I also want to color the cell backgrounds of the job gap columns, but this time a diverging color palette is appropriate because some professions have more women than men and others have more men than women. I use another ColorBrewer palette, "[PRGn](https://colorbrewer2.org/#type=diverging&scheme=PRGn&n=3)," because it is colorblind-safe. 
+
+```{r, message=FALSE}
+# build the tibble of job gap values
+job.gap.table <- total.jobs.by.sex %>%
+  pivot_wider(names_from = SEX, values_from = pct) %>%
+  mutate(job_gap = Male - Female) %>%
+  select(OCC2010, `total jobs_Male` = Male, `total jobs_Female` = Female, job_gap) %>%
+  mutate(`total jobs_Male` = job_gap, `total jobs_Female` = job_gap) %>%
+  select(-job_gap) %>%
+  mutate(OCC2010 = factor(OCC2010, levels = top.jobs)) %>%
+  arrange(OCC2010)
+
+# use the PRGn diverging palette
+purple_green_pal <- leaflet::colorNumeric(palette = "PRGn", domain = job.gap.table$`total jobs_Male`,
+                                          reverse = TRUE)
+
+format_job_gap <- function(gtobj, column){
+  # generate color for each cell in the column
+  color_value <- purple_green_pal(job.gap.table %>% pull(sym(column)))
+  
+  # for each row in the column, perform these formatting steps
+  for(i in seq_along(wage.tibble %>% pull(sym(column)))){
+    gtobj <- gtobj %>%
+      tab_style(style = list(
+        # fill the cell background
+        cell_fill(color = color_value[i]),
+        # color the text black or white depending on the luminence of the background color
+        cell_text(color = text_color(color_value[i]))
+      ),
+      locations = cells_body(columns = column, rows = i))
+  }
+  gtobj
+}
+
+wage.gt.step5 <- wage.gt.step4 %>%
+  format_job_gap("total jobs_Male") %>%
+  format_job_gap("total jobs_Female")
+wage.gt.step5 %>% tab_options(container.height = px(500))
+```
+
+## Final output
+
+As a final step, I add some additional footnotes explaining the cell background colors. Notice how `gt` automatically renumbers all the footnotes appropriately.
+
+```{r, message=FALSE}
+# add footnotes explaining the coloring of the cells
+wage.gt.step6 <- wage.gt.step5 %>%
+  tab_footnote(footnote = "Darker colors indicated a larger wage gap between men and women.",
+               locations = cells_column_spanners(c("Under 35", "35 to 50", "50 plus"))) %>%
+  tab_footnote(footnote = "Purple = more men than woman. Green = more women than men.",
+               locations = cells_column_spanners("total jobs"))
+wage.gt.step6 %>% tab_options(container.height = px(500))
+```
+
+### saving the table
+
+The function `gtsave` function offers several ways to save your table, including as a `png` or `pdf`. In this example, I save the output as an `html` file.
+
+```
+gtsave(wage.gt.step4, "WageAgeGenderTable.html", inline_css = TRUE,
+       path = "/your/file/directory/")
+```
